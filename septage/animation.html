@@ -76,12 +76,24 @@
   #legend .big { font-weight: 600; color: var(--ink); }
   #sumBox { flex: none; width: 330px; display: flex; flex-direction: column; justify-content: space-between; }
   #app.side #sumBox { width: auto; }
-  /* summary: one readout line under a hairline, verdict as coloured text (no box) */
-  #summary { padding: 4px 0 0; font-family: var(--mono); font-size: 12.5px; font-weight: 400; line-height: 1.4;
-    border-top: 1px solid var(--ink); opacity: 0; transition: opacity .4s; }
-  #summary .verdict { font-weight: 600; white-space: nowrap; }
-  #summary.pass .verdict { color: var(--pass); } #summary.fail .verdict { color: var(--fail); }
-  .foot { text-align: right; font-size: 10.5px; color: var(--ink2); margin-top: 4px; }
+  /* overall result: a small readout table (label left, value right). It stays neutral
+     while the animation plays; once the result is shown, updateText() adds
+     result--pass or result--fail, which tints the block and colours the status row. */
+  #summary { display: grid; grid-template-columns: auto 1fr; gap: 7px 12px; align-items: baseline;
+    padding: 12px 14px; border-radius: 2px; border-left: 3px solid transparent; background: transparent;
+    opacity: 0; transition: opacity .4s, background-color .4s, border-color .4s; }
+  #summary .rl { font-family: var(--cond); font-size: 11px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--ink2); white-space: nowrap; }
+  #summary .rv { font-family: var(--mono); font-size: 13px; font-weight: 500; color: var(--ink);
+    text-align: right; white-space: nowrap; }
+  #summary .unit { font-weight: 400; color: var(--ink2); }       /* units lighter, as in the metric row */
+  #summary .rv.status { font-size: 15px; font-weight: 600; }      /* the status row leads */
+  #summary.result--pass { background: #E7F0E8; border-left-color: var(--pass); }
+  #summary.result--fail { background: #F7E4E1; border-left-color: var(--fail); }
+  #summary.result--pass .status { color: var(--pass); }
+  #summary.result--fail .status { color: var(--fail); }
+  .foot { text-align: left; font-size: 11px; line-height: 1.4; color: var(--ink2); margin-top: 6px;
+    text-wrap: pretty; }   /* no one-word last line */
   /* SVG styling (sizes inside the SVG are viewBox units, set as attributes).
      Drawing-sheet line work: ink outlines, flat fills, a paper-coloured halo behind text.
      Fonts: labels in Plex Sans Condensed. SVG text that carries a numeric readout is
@@ -647,7 +659,8 @@ el("text", { x: 16, y: RIVER_Y + 62, class: "small", "font-size": u2(16) }, gLab
 const outCol = makeColumn(W2 - 90, 130, "Outfall", [P.c_eff_label + " mg/L"], "to the river");  // right edge ≤ W2 - 25
 
 // verdict badge: top-right of the facility tier (sized and placed in layoutLabels)
-const badgeRect = el("rect", { rx: 0, fill: "#F5F3EE" }, gBadge);   // paper: keeps the line clear
+// same pass/fail tint as the result block (opaque, so lines behind stay hidden)
+const badgeRect = el("rect", { rx: 0, fill: P.passed ? "#E7F0E8" : "#F7E4E1" }, gBadge);
 const badgeText = el("text", { "text-anchor": "middle", fill: P.passed ? "#2F6B3A" : "#A61B1B", "font-weight": 700 }, gBadge);
 badgeText.textContent = (P.passed ? "● PASS · " : "● FAIL · ") + P.verdict;
 gBadge.setAttribute("opacity", 0);
@@ -988,9 +1001,16 @@ function updateTally(t) {
 }
 const narration = document.getElementById("narrText"), phaseEl = document.getElementById("phase");
 const summary = document.getElementById("summary");
-summary.className = P.passed ? "pass" : "fail";
-summary.innerHTML = `Overall removal = ${P.overall_label}% &nbsp;·&nbsp; Load in ${P.load_in_label} → out ${P.load_out_label} kg/day
-  &nbsp;·&nbsp; <span class="verdict">● ${P.passed ? "PASS" : "FAIL"}</span>`;
+// Same values as before, split into label / value rows (rl = row label, rv = row value).
+summary.innerHTML =
+  `<span class="rl">Overall removal</span>
+   <span class="rv">${P.overall_label} <span class="unit">%</span></span>
+   <span class="rl">BOD load</span>
+   <span class="rv">${P.load_in_label} → ${P.load_out_label} <span class="unit">kg/day</span></span>
+   <span class="rl">DAO 2016-08</span>
+   <span class="rv status">● ${P.passed ? "PASS" : "FAIL"}</span>`;
+// pass/fail tint class; P.passed is the same flag used for the PASS/FAIL text above
+const RESULT_CLASS = P.passed ? "result--pass" : "result--fail";
 function updateText(t) {
   // "- 1e-6": when Step pauses exactly on a boundary, describe the phase just shown
   const i = phaseIndexAt(Math.max(0, t - 1e-6)), ph = phases[i];
@@ -1015,7 +1035,9 @@ function updateText(t) {
   else { txt = P.narration_outfall; lab = t >= TOTAL ? "Finished" : "Outfall"; }
   if (narration.textContent !== txt) narration.textContent = txt;
   phaseEl.textContent = lab;
-  summary.style.opacity = localU(outPh, t) > 0.6 ? 1 : 0;
+  const shown = localU(outPh, t) > 0.6;              // result reached (also after Skip / Replay)
+  summary.style.opacity = shown ? 1 : 0;
+  summary.className = shown ? RESULT_CLASS : "";     // neutral until the result is shown
 }
 
 /* ============================================================ render */
