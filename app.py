@@ -200,5 +200,7 @@ with t4:
                    "values from Baltazar et al. (2021) and Pausta et al. (2023).")
     tbl, stats = m.compare_with_literature(p, ref, kinetic)
     st.dataframe(tbl.round(2), width='stretch')
+    st.caption("Maynilad values are design projections, not measurements. "
+               "The Dumaguete influent is a design value.")
     st.write(f"**RMSE:** `{stats['rmse']:.2f} mg/L` · **Mean |% error|:** `{stats['mean_abs_pct_error']:.1f} %`")
     st.pyplot(plots.plot_comparison(tbl))

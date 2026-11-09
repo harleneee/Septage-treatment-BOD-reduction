@@ -118,7 +118,9 @@ def summary(p: Params, kinetic: bool = False) -> dict:
         "influent_load_kg_day": load_kg_day(p.influent_bod, p.flow),
         "effluent_load_kg_day": load_kg_day(out, p.flow),
         "limit_mg_l": p.limit,
-        "meets_limit": out <= p.limit,
+        # small tolerance for floating-point round-off: the paper example gives
+        # 50.00000000000001 mg/L, which must count as meeting a 50 mg/L limit
+        "meets_limit": out <= p.limit + 1e-9,
     }
 
 

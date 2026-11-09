@@ -1,5 +1,5 @@
 source,stage,observed (mg/L),simulated (mg/L),percent error (%)
-"PLACEHOLDER (replace with Baltazar et al., 2021)",Primary settling,1200,1235.0,2.9166666666666665
-"PLACEHOLDER (replace with Baltazar et al., 2021)",Biological treatment,100,176.42857142857136,76.42857142857136
-"PLACEHOLDER (replace with Pausta et al., 2023)",Biological treatment,120,176.42857142857136,47.02380952380947
-"PLACEHOLDER (replace with Pausta et al., 2023)",Polishing & disinfection,50,70.57142857142854,41.14285714285708
+"Maynilad Water Services (2006), design",Primary settling,963.0,1699.3600000000001,76.46521287642784
+"Maynilad Water Services (2006), design",Biological treatment,193.0,242.76571428571418,25.785344189489216
+"Singh et al. (2023), measured",Polishing & disinfection,41.87,84.5304571428571,101.88788426763101
+"Antonio (2011), Dumaguete",Polishing & disinfection,2.0,88.21428571428568,4310.714285714284

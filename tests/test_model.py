@@ -46,6 +46,13 @@ def test_limit_check():
     assert not m.summary(m.Params(influent_bod=1000, removal=(0, 0, 0, 0)))["meets_limit"]
 
 
+def test_paper_example_meets_50_mg_l_limit():
+    # 1000 -> 800 -> 150 -> 50 mg/L; float round-off gives 50.00000000000001,
+    # which must still count as meeting the 50 mg/L limit
+    p = m.Params(influent_bod=1000, removal=(0, 0.2, 0.8125, 2 / 3), limit=50)
+    assert m.summary(p)["meets_limit"] is True
+
+
 def test_sensitivity_ranks_biggest_lever_first_and_matches_derivative():
     p = m.Params()
     s = m.sensitivity(p, 0.01)

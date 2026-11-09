@@ -1,5 +1,5 @@
 source,stage,influent_bod_mg_l,bod_mg_l
-"PLACEHOLDER (replace with Baltazar et al., 2021)",Primary settling,2000,1200
-"PLACEHOLDER (replace with Baltazar et al., 2021)",Biological treatment,2000,100
-"PLACEHOLDER (replace with Pausta et al., 2023)",Biological treatment,2000,120
-"PLACEHOLDER (replace with Pausta et al., 2023)",Polishing & disinfection,2000,50
+"Maynilad Water Services (2006), design",Primary settling,2752,963
+"Maynilad Water Services (2006), design",Biological treatment,2752,193
+"Singh et al. (2023), measured",Polishing & disinfection,2395.6,41.87
+"Antonio (2011), Dumaguete",Polishing & disinfection,2500,2

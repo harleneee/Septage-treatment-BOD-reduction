@@ -14,9 +14,17 @@ Simulates BOD through four stages: screening & grit → primary settling → bio
 - **Sensitivity:** effluent BOD swing for ± change in each stage's removal.
 - **Literature comparison:** percent error and RMSE vs `data/literature_bod.csv`.
 
-> `data/literature_bod.csv` currently holds **placeholder numbers**, not real data. Replace them with values from
-> Baltazar et al. (2021) and Pausta et al. (2023). Columns: `source, stage, influent_bod_mg_l, bod_mg_l`
-> (BOD leaving that stage). The default inputs (2000 mg/L, removals 5/35/92/60 %, k = 1.5/day, V = 200 m³) are also illustrative.
+`data/literature_bod.csv` columns: `source, stage, influent_bod_mg_l, bod_mg_l` (BOD leaving that stage).
+Sources:
+- **Maynilad Water Services (2006)** — Project 7 sewage/septage treatment plant EMP, Table 1.1 (design values):
+  raw septage 2,752 mg/L → 963 mg/L after screening/grit/pre-aerated equalization → 193 mg/L after UASB + SBR.
+  Design projections, not measurements.
+- **Singh et al. (2023)**, *Adv. Environ. Technol.* 9(4):322–328 — lab hybrid constructed wetland,
+  mean influent 2,395.6 mg/L → effluent 41.87 mg/L (measured).
+- **Antonio (2011)** (IWA-7739) — Dumaguete pond + wetland system, design influent 2,500 mg/L,
+  measured effluent 2 mg/L.
+
+The default inputs (2000 mg/L, removals 5/35/92/60 %, k = 1.5/day, V = 200 m³) are illustrative.
 
 ## Animation tab
 Click **▶ Run simulation** to play a two-tier side view: households drain into their own septic
