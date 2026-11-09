@@ -1,0 +1,1177 @@
+<!DOCTYPE html>
+<!--
+  Animated view: households with septic tanks (tier 1, top) -> vacuum truck ->
+  treatment facility (tier 2, below).  Self-contained: no CDN, no libraries.
+  __PAYLOAD__ is replaced by septage/animation.py with the model's results (JSON).
+  Nothing here computes BOD: every number shown comes from that payload.
+  Everything drawn is a pure function of the playback time t (seconds), so
+  pause / step / skip / replay just change t.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* The page fills the fixed-height iframe exactly; nothing scrolls.
+     Layout: controls bar on top, then the scene (#stage) and the text panel (#info),
+     either stacked (scene above text) or side by side — JS picks whichever
+     gives the larger scene (chooseLayout).                                        */
+  /* Look: "engineering datasheet" — paper, ink line work, one signal-orange accent.
+     Fonts: IBM Plex (Sans for text, Sans Condensed for labels, Mono for numbers);
+     loaded from the host Streamlit page, with system fallbacks (see the end of the script). */
+  :root { color-scheme: light;
+    --paper: #F5F3EE; --panel: #ECE9E1; --ink: #1B1E22; --ink2: #5A5F66; --rule: #C9C4B8;
+    --accent: #C2410C; --pass: #2F6B3A; --fail: #A61B1B;
+    --sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+    --cond: "IBM Plex Sans Condensed", "Arial Narrow", "Segoe UI Symbol", sans-serif;
+    --mono: "IBM Plex Mono", Consolas, monospace; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; color: var(--ink);
+    font-family: var(--sans); }
+  #app { height: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px;
+    background: var(--paper); border: 1px solid var(--rule); border-radius: 0; padding: 6px 8px; }
+  #app:fullscreen { border: none; }
+  .controls { flex: none; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  /* square, text-forward buttons; the accent marks only the active speed / view */
+  button { background: transparent; color: var(--ink); border: 1px solid var(--rule); border-radius: 2px;
+    padding: 3px 9px; font-size: 12.5px; cursor: pointer; font-family: var(--cond); font-weight: 500;
+    letter-spacing: .03em; line-height: 1.4;
+    font-variant-emoji: text; }   /* ▶ ⏭ ⏩ as plain glyphs, not colour emoji */
+  button:hover { border-color: var(--ink); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.on { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+  .group { display: inline-flex; gap: 3px; align-items: center; margin-left: 10px; font-family: var(--cond);
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--ink2); }
+  .group button { text-transform: none; letter-spacing: .03em; font-size: 12.5px; }
+  .group button[data-speed] { font-family: var(--mono); font-weight: 400; letter-spacing: 0; }
+  .toggle { display: inline-flex; gap: 4px; align-items: center; font-size: 12.5px; color: var(--ink);
+    margin-left: 10px; cursor: pointer; }
+  .toggle input { accent-color: var(--ink); }
+  #main { flex: 1; min-height: 0; display: flex; gap: 8px; }
+  #app.stacked #main { flex-direction: column; }
+  /* the scene: fixed 1600x900 canvas, scaled to fit (letterboxed, never cropped) */
+  #stage { flex: 1; min-height: 0; min-width: 0; position: relative; overflow: hidden;
+    background: var(--paper); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+    touch-action: none; }
+  #zoomer { position: absolute; inset: 0; transform-origin: 50% 50%; }
+  #zoomer svg { width: 100%; height: 100%; display: block; }
+  /* text panel */
+  #info { flex: none; display: flex; flex-direction: column; gap: 6px; }
+  #app.side #info { width: 320px; }
+  #narration { font-size: 14.5px; line-height: 1.35; min-height: 2.7em; }
+  #phase { display: inline-block; font-family: var(--cond); font-size: 11px; font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--ink2);
+    border-right: 1px solid var(--rule); padding: 0 8px 0 0; margin-right: 8px; vertical-align: 1px; }
+  #infoRow { display: flex; gap: 14px; }
+  #app.side #infoRow { flex-direction: column; }
+  #tally { flex: 1; min-width: 0; }
+  .tally-head { font-size: 11.5px; color: var(--ink2); margin: 0 1px 3px; }
+  #bar { display: flex; height: 20px; border-radius: 0; overflow: hidden; background: transparent;
+    border: 1px solid var(--ink); }
+  #bar div { height: 100%; display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 11px; font-weight: 500; white-space: nowrap; overflow: hidden; }
+  #bar .left { background: var(--panel); color: var(--ink); border-left: 1px solid var(--ink); }
+  #legend { display: flex; flex-wrap: wrap; gap: 0 12px; margin: 4px 1px 0; font-family: var(--mono);
+    font-size: 11px; line-height: 1.4; color: var(--ink); min-height: 2.8em; }
+  #legend span.sw { display: inline-block; width: 9px; height: 9px; border-radius: 0;
+    margin-right: 4px; vertical-align: 0; }
+  #legend .big { font-weight: 600; color: var(--ink); }
+  #sumBox { flex: none; width: 330px; display: flex; flex-direction: column; justify-content: space-between; }
+  #app.side #sumBox { width: auto; }
+  /* summary: one readout line under a hairline, verdict as coloured text (no box) */
+  #summary { padding: 4px 0 0; font-family: var(--mono); font-size: 12.5px; font-weight: 400; line-height: 1.4;
+    border-top: 1px solid var(--ink); opacity: 0; transition: opacity .4s; }
+  #summary .verdict { font-weight: 600; white-space: nowrap; }
+  #summary.pass .verdict { color: var(--pass); } #summary.fail .verdict { color: var(--fail); }
+  .foot { text-align: right; font-size: 10.5px; color: var(--ink2); margin-top: 4px; }
+  /* SVG styling (sizes inside the SVG are viewBox units, set as attributes).
+     Drawing-sheet line work: ink outlines, flat fills, a paper-coloured halo behind text.
+     Fonts: labels in Plex Sans Condensed. SVG text that carries a numeric readout is
+     marked with font-weight 700 (BOD counters, verdict, truck Q label) or 500 (stage
+     sub-lines) and is set in Plex Mono. The label fitter measures text with the same
+     font-weight attribute, so these rules also apply to its measurements and the
+     fitted sizes stay exact. */
+  #scene text { font-family: var(--cond); }
+  /* labels of stages not reached yet are drawn at opacity 0.5; on paper that is below
+     WCAG AA, so they are dimmed a little less (still clearly "not yet") */
+  #scene text[opacity="0.5"] { opacity: .72; }
+  #scene text[font-weight="700"] { font-family: var(--mono); font-weight: 600; }
+  #scene text[font-weight="500"] { font-family: var(--mono); font-weight: 400; }
+  .tank { fill: none; stroke: #1B1E22; stroke-width: 1.5; stroke-linejoin: round; }
+  .lbl, .small { fill: #1B1E22; paint-order: stroke; stroke: #F5F3EE; stroke-width: 3; stroke-linejoin: round; }
+  .dim { fill: #5A5F66; }
+  .small { fill: #5A5F66; }
+</style>
+</head>
+<body>
+<div id="app" class="stacked">
+  <div class="controls">
+    <button id="play">⏸ Pause</button>
+    <button id="replay">↺ Replay</button>
+    <button id="step" title="Play one stage, then pause">⏭ Step</button>
+    <button id="skip">⏩ Skip to end</button>
+    <span class="group">Speed
+      <button data-speed="0.5">0.5×</button><button data-speed="1" class="on">1×</button><button data-speed="2">2×</button>
+    </span>
+    <label class="toggle" title="Start at Arrival (skip households and collection)">
+      <input type="checkbox" id="skipIntro"> Skip intro</label>
+    <span class="group">View
+      <button id="fit" class="on" title="Show the whole scene">Fit</button>
+      <button id="zoomOut" title="Zoom out">−</button>
+      <button id="zoomIn" title="Zoom in (drag the scene to pan)">+</button>
+      <button id="fullscreen" title="Fullscreen">⛶ Fullscreen</button>
+    </span>
+  </div>
+  <div id="main">
+    <div id="stage"><div id="zoomer">
+      <svg id="scene" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid meet" role="img"
+           aria-label="Animated septage collection and treatment"></svg>
+    </div></div>
+    <div id="info">
+      <div id="narration"><span id="phase"></span><span id="narrText"></span></div>
+      <div id="infoRow">
+        <div id="tally">
+          <div class="tally-head">BOD removed by each stage (mg/L) — full bar = influent BOD₀</div>
+          <div id="bar"></div>
+          <div id="legend"></div>
+        </div>
+        <div id="sumBox">
+          <div id="summary"></div>
+          <div class="foot">Illustrative animation — values from the model; particles not to scale.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const P = __PAYLOAD__;               // model results injected by animation.py
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("scene");
+/* Fixed design canvas, 1600 x 900 (16:9).  The browser scales it to fit the
+   available box (preserveAspectRatio="xMidYMid meet"), so every position AND
+   every font size below is in these viewBox units and scales together.
+   Tier 1 (households) is drawn directly in canvas units (top ~28 %).
+   Tier 2 (facility) is drawn in its own local units and scaled by S2 to fill
+   the rest (~71 %); W2 is the facility's width in those local units.          */
+const VBW = 1600, VBH = 900;
+const TIER2_Y = 262, T2_LOCAL_H = 520;
+const S2 = (VBH - TIER2_Y) / T2_LOCAL_H;   // ≈ 1.23
+const W2 = VBW / S2;                       // ≈ 1304 local units
+const u2 = size => size / S2;              // canvas font size -> tier-2 local units
+const N = P.stages.length;
+
+/* ================================================================ helpers */
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, u) => a + (b - a) * u;
+const ease = u => u * u * (3 - 2 * u);                  // smooth 0..1
+const seg = (u, a, b) => clamp((u - a) / (b - a), 0, 1); // progress of u inside [a, b]
+
+function el(tag, attrs = {}, parent = svg) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  parent.appendChild(e);
+  return e;
+}
+// Seeded random numbers, so the same inputs always give the same picture.
+function rng(seed) {
+  return function () {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* ======================================================= water colour
+   Log scale of BOD: clear blue at/below the limit -> murky green -> dark brown at C0. */
+const BLUE = [92, 156, 204], GREEN = [118, 128, 66], BROWN = [104, 70, 38];   // tuned for the paper background
+const LOG_LO = Math.log(Math.max(P.limit, 1e-6));
+const LOG_HI = Math.log(Math.max(P.c0, P.limit * 10));
+function bodColor(c) {
+  const f = c <= 0 ? 0 : clamp((Math.log(c) - LOG_LO) / (LOG_HI - LOG_LO), 0, 1);
+  const [a, b, u] = f < 0.5 ? [BLUE, GREEN, f / 0.5] : [GREEN, BROWN, (f - 0.5) / 0.5];
+  return "rgb(" + a.map((v, i) => Math.round(lerp(v, b[i], u))).join(",") + ")";
+}
+
+/* ============================================================ timeline
+   households (3 s) -> collection by vacuum truck (3 s)          <- narrative intro, no numbers
+   -> arrival (2 s) -> one phase per stage (3 s each) -> outfall (2 s).            */
+/* Collection route (seconds from the start of the collection phase).
+   The truck drives in, then stops at EVERY septic tank from left to right:
+   pull up (0.2 s, not needed at the first stop) -> hose down (0.1 s)
+   -> pump (0.45 s) -> hose up (0.1 s).  One stop = 0.9 s, so 4 tanks take 3.6 s.
+   Then it leaves for the facility (1 s).                                       */
+const HOUSE_X = [290, 490, 690, 890];  // house centres (tier 1, canvas units)
+const COLLECT = (() => {
+  const DRIVE_IN = 0.4, STOP = 0.9, MOVE = 0.2, HOSE = 0.1, PUMP = 0.45, LEAVE = 1.0;
+  const stops = HOUSE_X.map((c, k) => {
+    const start = DRIVE_IN + k * STOP, arrive = start + (k ? MOVE : 0);
+    const riser = c - 64;                 // centre of the tank's access riser
+    return { start, arrive, riser, X: riser - 125,   // X: truck position for this stop
+             pumpStart: arrive + HOSE, pumpEnd: arrive + HOSE + PUMP };
+  });
+  const leave = DRIVE_IN + HOUSE_X.length * STOP;
+  return { DRIVE_IN, STOP, HOSE, stops, leave, total: leave + LEAVE };
+})();
+const phases = [{ type: "households", dur: 3 }, { type: "collection", dur: COLLECT.total },
+                { type: "arrival", dur: 2 }];
+const INTRO = 2;   // number of intro phases; facility phases start at index INTRO
+P.stages.forEach((s, i) => phases.push({ type: "stage", i, dur: 3 }));
+phases.push({ type: "outfall", dur: 2 });
+let acc = 0;
+for (const ph of phases) { ph.start = acc; acc += ph.dur; ph.end = acc; }
+const TOTAL = acc;
+const INTRO_END = phases[INTRO].start;   // time at which Arrival begins
+const localU = (ph, t) => clamp((t - ph.start) / ph.dur, 0, 1);
+const statusOf = (ph, t) => (t < ph.start ? "before" : t >= ph.end ? "done" : "active");
+function phaseIndexAt(t) {
+  for (let i = 0; i < phases.length; i++) if (t < phases[i].end) return i;
+  return phases.length - 1;
+}
+// Pipe flow speed grows mildly with Q (clamped so it stays readable).
+const FLOW_SPEED = 40 * clamp(1 + 0.35 * Math.log10(Math.max(P.flow, 1e-3) / 50), 0.6, 1.8);
+
+/* ============================================================== layout */
+const TOP = 155, BOT = 305, WS = 182, PIPE_Y = 200, CONE_TIP = 342; // y-coordinates
+const STAGE_X0 = 215, STAGE_X1 = W2 - 150, OUT_X = W2 - 70;        // x-coordinates (tier-2 local)
+const RIVER_Y = 425;                                                // river surface (tier-2 local)
+const pfr = P.kinetics && P.kinetics.reactor === "pfr";
+const weights = P.stages.map(s => (s.kind === "biological" && pfr ? 1.6 : 1));
+const wsum = weights.reduce((a, b) => a + b, 0) || 1;
+let cursor = STAGE_X0;
+const slots = weights.map(w => {
+  const width = (STAGE_X1 - STAGE_X0) * w / wsum;
+  const slot = { x: cursor, w: width, cx: cursor + width / 2 };
+  cursor += width;
+  return slot;
+});
+
+/* SVG layers, back to front.
+   Tier 1 (households) uses canvas coordinates, y = 0..TIER2_Y.
+   Tier 2 (the facility) uses its local coordinates; the whole group is moved
+   down by TIER2_Y and scaled by S2.                                             */
+const defs = el("defs");
+const gTier1 = el("g");
+const gTier2 = el("g", { transform: `translate(0,${TIER2_Y}) scale(${S2.toFixed(4)})` });
+// Inside tier 2 the plant is drawn 18 units lower than its own coordinates, leaving
+// room at the top for the stage labels (gCols) and the verdict badge.
+const SHIFT = 18;
+const gScene = el("g", { transform: `translate(0,${SHIFT})` }, gTier2);
+const gPipes = el("g", {}, gScene), gWater = el("g", {}, gScene), gInside = el("g", {}, gScene),
+      gParticles = el("g", {}, gScene), gFx = el("g", {}, gScene), gOutline = el("g", {}, gScene),
+      gLabels = el("g", {}, gScene), gCols = el("g", {}, gTier2), gBadge = el("g", {}, gTier2);
+const gTop = el("g");   // vacuum truck + its hose + its label: drawn over both tiers
+
+// brown plume gradient (used only when the effluent FAILS)
+const grad = el("radialGradient", { id: "plume" }, defs);
+el("stop", { offset: "0%", "stop-color": "#8a5a26", "stop-opacity": 0.9 }, grad);
+el("stop", { offset: "100%", "stop-color": "#7a4f22", "stop-opacity": 0 }, grad);
+
+/* ------------------------------------------------------------ tanks */
+function tankPath(tx, tw, kind) {
+  if (kind === "settling")   // rectangular top part with a cone (hopper) bottom
+    return `M${tx},${TOP} V290 L${tx + tw / 2},${CONE_TIP} L${tx + tw},290 V${TOP}`;
+  return `M${tx},${TOP} V${BOT} H${tx + tw} V${TOP}`;
+}
+function makeTank(id, tx, tw, kind) {
+  const bottom = kind === "settling" ? CONE_TIP : BOT;
+  const clip = el("clipPath", { id: "clip" + id }, defs);
+  el("path", { d: tankPath(tx, tw, kind) + " Z" }, clip);
+  const water = el("rect", { x: tx, width: tw, y: bottom, height: 0, opacity: 0.92,
+                             "clip-path": `url(#clip${id})` }, gWater);
+  el("path", { d: tankPath(tx, tw, kind) + " Z", fill: "#E4E0D6" }, gPipes); // empty interior
+  el("path", { d: tankPath(tx, tw, kind), class: "tank" }, gOutline);
+  return {
+    tx, tw, bottom, left: tx, right: tx + tw,
+    set(level, color) {            // level 0..1 of the way up to the water surface
+      const y = lerp(bottom, WS, level);
+      water.setAttribute("y", y);
+      water.setAttribute("height", Math.max(0, bottom - y));
+      water.setAttribute("fill", color);
+    },
+  };
+}
+
+/* ------------------------------------------------------- particles
+   Each particle is a small circle.  particleState() returns where it is at
+   local stage progress u (0..1) — or null when it should be hidden.          */
+const REM_D = 0.14;   // length of one removal animation, in units of u
+function makeParticles(count, area, R, appearFrom, appearTo) {
+  const list = [];
+  for (let j = 0; j < count; j++) {
+    list.push({
+      el: el("circle", { r: 2.6, fill: "#EAD3A2", stroke: "#4A2F17", "stroke-width": 0.6, visibility: "hidden" }, gParticles),
+      bx: lerp(area.x0, area.x1, R()), by: lerp(area.y0, area.y1, R()),
+      ph: R() * 6.28, fr: 0.8 + R() * 1.2,
+      appear: lerp(appearFrom, appearTo, R()),
+      removed: false, shown: false,
+    });
+  }
+  return list;
+}
+function draw(p, s) {   // s = [x, y, r, opacity, fill] or null
+  if (!s) { if (p.shown) { p.el.setAttribute("visibility", "hidden"); p.shown = false; } return; }
+  if (!p.shown) { p.el.setAttribute("visibility", "visible"); p.shown = true; }
+  p.el.setAttribute("cx", s[0].toFixed(1));
+  p.el.setAttribute("cy", s[1].toFixed(1));
+  p.el.setAttribute("r", Math.max(0, s[2]).toFixed(2));
+  p.el.setAttribute("opacity", s[3].toFixed(2));
+  p.el.setAttribute("fill", s[4] || "#EAD3A2");
+}
+
+/* ============================================================ labels
+   Each column has: name (wrapped), BOD counter, and a small sub-line.
+   Font sizes are fitted to the column width in layoutLabels().              */
+const columns = [];
+function makeColumn(cx, maxW, name, counterStrs, subStr) {
+  const c = {
+    cx, maxW, name, counterStrs, subStr,
+    nameEl: el("text", { "text-anchor": "middle", class: "lbl" }, gCols),
+    counterEl: el("text", { "text-anchor": "middle", class: "lbl", "font-weight": 700 }, gCols),
+    subEl: el("text", { "text-anchor": "middle", class: "lbl dim", "font-weight": 500 }, gCols),
+  };
+  c.subEl.textContent = subStr;
+  columns.push(c);
+  return c;
+}
+
+/* ============================================================ arrival */
+const arrival = (() => {
+  const ph = phases[INTRO];
+  const tank = makeTank("r", 132, 58, "generic");
+  // (the vacuum truck itself is drawn and moved by `truck`, further below)
+  el("line", { x1: 0, y1: 317, x2: 200, y2: 317, stroke: "#5A5F66", "stroke-width": 1.5 }, gPipes);
+  const hose = el("path", { d: `M120,262 C134,262 134,${TOP - 14} 160,${TOP - 14} L160,${TOP + 10}`,
+                            fill: "none", stroke: "#4A4F57", "stroke-width": 6, "stroke-linecap": "round",
+                            visibility: "hidden" }, gOutline);
+  const stream = el("line", { x1: 160, y1: TOP + 10, x2: 160, y2: BOT, stroke: bodColor(P.c0), "stroke-width": 4,
+                              "stroke-dasharray": "8 6", visibility: "hidden" }, gFx);
+  const R = rng(7);
+  const parts = makeParticles(P.particles_c0, { x0: 140, x1: 182, y0: WS + 8, y1: BOT - 10 }, R, 0.5, 0.92);
+  const col = makeColumn(100, 190, "Arrival · receiving tank", ["BOD₀ = " + P.c0_label + " mg/L"],
+                         "Q = " + P.flow_label + " m³/day");
+  return {
+    update(t) {
+      const u = localU(ph, t), st = statusOf(ph, t);
+      hose.setAttribute("visibility", u >= 0.42 ? "visible" : "hidden");
+      const pouring = u >= 0.45 && u < 0.97;
+      stream.setAttribute("visibility", pouring ? "visible" : "hidden");
+      stream.setAttribute("stroke-dashoffset", (-t * FLOW_SPEED * 1.5).toFixed(1));
+      stream.setAttribute("y2", lerp(BOT, WS, ease(seg(u, 0.45, 0.95))));
+      tank.set(ease(seg(u, 0.45, 0.95)), bodColor(P.c0));
+      for (const p of parts) {
+        if (u < p.appear) { draw(p, null); continue; }
+        const a = ease(seg(u, p.appear, p.appear + 0.06));
+        const amp = 4 * (1 - seg(t, ph.end, ph.end + 0.01));  // still once arrival is over
+        draw(p, [p.bx + amp * Math.sin(t * p.fr + p.ph), p.by + amp * Math.cos(t * p.fr + p.ph), 2.6, 0.9 * a]);
+      }
+      const show = u >= 0.45 ? 1 : 0;
+      col.counterEl.textContent = "BOD₀ = " + P.c0_label + " mg/L";
+      col.counterEl.setAttribute("opacity", show);
+      col.subEl.setAttribute("opacity", show);
+      col.nameEl.setAttribute("opacity", st === "before" ? 0.5 : 1);
+    },
+    tank,
+  };
+})();
+
+/* ============================================================== stages */
+function makeStage(s, i) {
+  const ph = phases[i + 1 + INTRO], slot = slots[i], kind = s.kind;
+  const tw = Math.min(slot.w - 46, 150 * weights[i]);
+  const tx = slot.cx - tw / 2, cx = slot.cx;
+  const tank = makeTank(i, tx, tw, kind);
+  const R = rng(1000 + 97 * i);
+  const area = { x0: tx + 10, x1: tx + tw - 10, y0: WS + 10, y1: (kind === "settling" ? 282 : BOT - 12) };
+
+  /* --- particles: n_in enter; (n_in - n_out) of them are removed, the rest stay --- */
+  const nIn = s.particles_in, nOut = Math.min(s.particles_out, nIn), nRem = nIn - nOut;
+  const parts = makeParticles(nIn, area, R, 0.02, 0.12);
+  const order = parts.map((_, j) => j).sort(() => R() - 0.5);      // random pick of removed ones
+  const removedParts = order.slice(0, nRem).map(j => parts[j]);
+  removedParts.forEach((p, k) => {
+    p.removed = true;
+    p.tr = 0.18 + 0.54 * (k + R() * 0.8) / Math.max(nRem, 1);       // staggered removal times
+  });
+
+  /* --- stage-specific drawings --- */
+  const fx = { tick() {} };   // per-frame extra effects for this stage
+  const smallLabels = [];      // [element, maxWidth] — fitted in layoutLabels()
+  const smallText = (x, y, str, maxW) => {
+    const e = el("text", { x, y, "text-anchor": "middle", class: "small" }, gLabels);
+    e.textContent = str; smallLabels.push([e, maxW]); return e;
+  };
+
+  if (kind === "screening") {
+    // bar screen (slanted bars) at the inlet, hopper chute to a screenings bin; grit channel on the floor
+    const sx = tx + 16;
+    for (let b = 0; b < 5; b++)
+      el("line", { x1: sx - 4 + b * 3, y1: TOP + 6, x2: sx + 6 + b * 3, y2: BOT - 2, stroke: "#1B1E22",
+                   "stroke-width": 1.2 }, gInside);
+    el("line", { x1: sx + 12, y1: BOT, x2: sx + 12, y2: 352, stroke: "#A8A294", "stroke-width": 6 }, gPipes);
+    el("path", { d: `M${tx},352 L${tx + 4},386 H${tx + 50} L${tx + 54},352 Z`, fill: "#E4E0D6",
+                 stroke: "#1B1E22", "stroke-width": 1.2 }, gOutline);
+    const gx0 = tx + tw * 0.5, gx1 = tx + tw - 4;
+    el("rect", { x: gx0, y: BOT - 9, width: gx1 - gx0, height: 9, fill: "#CFC8B8", stroke: "#1B1E22",
+                 "stroke-width": 1 }, gInside);
+    smallText(tx + 27, 400, "screenings", 60);
+    smallText((gx0 + gx1) / 2, 320, "grit channel", gx1 - gx0 + 20);
+    removedParts.forEach((p, k) => {
+      p.dest = k % 5 < 3 ? "bin" : "grit";   // ~60 % debris on the screen, ~40 % grit
+      p.dx = p.dest === "bin" ? lerp(tx + 10, tx + 44, R()) : lerp(gx0 + 4, gx1 - 4, R());
+      p.dy = p.dest === "bin" ? lerp(362, 381, R()) : lerp(BOT - 7, BOT - 3, R());
+      p.sx = sx + 8;
+    });
+  }
+
+  let sludge = null, cake = null;
+  if (kind === "settling") {
+    // sludge layer in the cone, sludge pipe down to a drying bed
+    sludge = el("path", { fill: "#5A3A1C", stroke: "#3D2712", "stroke-width": 1 }, gInside);
+    el("line", { x1: cx, y1: CONE_TIP, x2: cx, y2: 362, stroke: "#A8A294", "stroke-width": 6 }, gPipes);
+    el("rect", { x: cx - 42, y: 362, width: 84, height: 22, fill: "#DCD2BC", stroke: "#1B1E22",
+                 "stroke-width": 1.2 }, gOutline);
+    cake = el("rect", { x: cx - 38, width: 76, y: 380, height: 0, fill: "#5a3a1c" }, gOutline);
+    smallText(cx, 400, "sludge drying bed", tw + 30);
+    removedParts.forEach(p => {
+      p.dx = cx + (R() - 0.5) * tw * 0.35;
+      p.dy = lerp(305, 330, R());
+    });
+  }
+
+  if (kind === "biological") {
+    // diffuser grid on the floor, rising air bubbles, wandering microbes, CO2 bubbles
+    el("line", { x1: tx + 8, y1: BOT - 6, x2: tx + tw - 8, y2: BOT - 6, stroke: "#5A5F66", "stroke-width": 1.5 }, gInside);
+    if (pfr) {   // plug flow: long channel with alternating baffles
+      for (let b = 1; b <= 4; b++) {
+        const x = tx + tw * b / 5;
+        const ends = b % 2 ? { y1: TOP - 2, y2: BOT - 30 } : { y1: BOT, y2: WS + 18 };  // hang from top / rise from floor
+        el("line", { x1: x, x2: x, ...ends, stroke: "#1B1E22", "stroke-width": 1.5 }, gInside);
+      }
+    }
+    const air = [], microbes = [], co2 = [];
+    for (let b = 0; b < 14; b++)
+      air.push({ el: el("circle", { r: 2.2, fill: "rgba(220,235,255,0.55)", visibility: "hidden" }, gFx),
+                 x: lerp(tx + 12, tx + tw - 12, R()), T: 1.6 + R(), ph: R() });
+    for (let b = 0; b < 10; b++)
+      microbes.push({ el: el("circle", { r: 3.4, fill: "#A9CFA3", stroke: "#2F6B3A", visibility: "hidden" }, gFx),
+                      bx: lerp(area.x0 + 8, area.x1 - 8, R()), by: lerp(area.y0 + 6, area.y1 - 6, R()), ph: R() * 6.28 });
+    const microbePos = (m, t) => [m.bx + 12 * Math.sin(0.9 * t + m.ph), m.by + 8 * Math.cos(0.7 * t + m.ph)];
+    removedParts.forEach((p, k) => {
+      p.mic = microbes[k % microbes.length];
+      if (k % 2 === 0)
+        co2.push({ p, el: el("circle", { r: 2.4, fill: "none", stroke: "#FDFCF8", "stroke-width": 1, visibility: "hidden" }, gFx) });
+    });
+    const co2Label = el("text", { x: tx + tw - 6, y: WS - 8, "text-anchor": "end", class: "small", opacity: 0,
+                                  "font-size": u2(15) }, gLabels);
+    co2Label.textContent = "CO₂ ↑";
+    if (P.kinetics) {
+      smallText(cx, 328, pfr ? "Plug flow (baffled channel)" : "CSTR (completely mixed)", slot.w - 8);
+      smallText(cx, 349, `τ = ${P.kinetics.tau_label} d, k = ${P.kinetics.k_label} d⁻¹`, slot.w - 8);
+    }
+    fx.microbePos = microbePos;
+    fx.tick = (u, t, st) => {
+      const on = st !== "before" && u > 0.08;
+      for (const b of air) {
+        b.el.setAttribute("visibility", on ? "visible" : "hidden");
+        if (!on) continue;
+        const f = ((t / b.T) + b.ph) % 1;
+        b.el.setAttribute("cx", (b.x + 3 * Math.sin(f * 9 + b.ph * 6)).toFixed(1));
+        b.el.setAttribute("cy", lerp(BOT - 8, WS + 2, f).toFixed(1));
+      }
+      for (const m of microbes) {
+        m.el.setAttribute("visibility", on ? "visible" : "hidden");
+        if (!on) continue;
+        const [x, y] = microbePos(m, t);
+        m.el.setAttribute("cx", x.toFixed(1)); m.el.setAttribute("cy", y.toFixed(1));
+      }
+      for (const c of co2) {   // a CO2 bubble rises from each digested particle (every 2nd one drawn)
+        const v = seg(u, c.p.tr + REM_D * 0.5, c.p.tr + REM_D * 0.5 + 0.2);
+        const vis = st === "active" && v > 0 && v < 1;
+        c.el.setAttribute("visibility", vis ? "visible" : "hidden");
+        if (!vis) continue;
+        c.el.setAttribute("cx", (c.p.bx + 4 * Math.sin(v * 8)).toFixed(1));
+        c.el.setAttribute("cy", lerp(c.p.by, WS - 24, v).toFixed(1));
+        c.el.setAttribute("opacity", (1 - v).toFixed(2));
+      }
+      co2Label.setAttribute("opacity", st === "active" && nRem > 0 && u > 0.2 && u < 0.95 ? 1 : 0);
+    };
+  }
+
+  if (kind === "polishing") {
+    // baffled contact tank with UV glints
+    for (let b = 1; b <= 3; b++) {
+      const x = tx + tw * b / 4;
+      el("line", b % 2 ? { x1: x, y1: TOP - 2, x2: x, y2: BOT - 32, stroke: "#1B1E22", "stroke-width": 1.5 }
+                        : { x1: x, y1: BOT, x2: x, y2: WS + 20, stroke: "#1B1E22", "stroke-width": 1.5 }, gInside);
+    }
+    const glints = [];
+    for (let g = 0; g < 8; g++)
+      glints.push({ el: el("path", { d: "M0,-6 L1.3,-1.3 L6,0 L1.3,1.3 L0,6 L-1.3,1.3 L-6,0 L-1.3,-1.3 Z",
+                                     fill: "#FDFCF8", visibility: "hidden" }, gFx),
+                    x: lerp(area.x0, area.x1, R()), y: lerp(area.y0, area.y1, R()), ph: R() * 6.28, w: 1.8 + R() * 1.5 });
+    fx.tick = (u, t, st) => {
+      const on = st !== "before" && u > 0.12;
+      for (const g of glints) {
+        g.el.setAttribute("visibility", on ? "visible" : "hidden");
+        if (!on) continue;
+        const a = Math.pow(Math.max(0, Math.sin(t * g.w + g.ph)), 6);
+        g.el.setAttribute("transform", `translate(${g.x.toFixed(1)},${g.y.toFixed(1)}) scale(${(0.4 + a).toFixed(2)})`);
+        g.el.setAttribute("opacity", a.toFixed(2));
+      }
+    };
+  }
+
+  /* --- where is particle p at stage progress u? --- */
+  function particleState(p, u, t) {
+    if (u < p.appear) return null;
+    const amp = 5 * (1 - seg(u, 0.85, 1));               // water calms down at the end
+    let x = p.bx + amp * Math.sin(t * p.fr + p.ph);
+    let y = p.by + amp * Math.cos(t * p.fr * 0.8 + p.ph);
+    const ein = ease(seg(u, p.appear, p.appear + 0.1)); // slide in from the inlet pipe
+    x = lerp(tx + 4, x, ein); y = lerp(PIPE_Y, y, ein);
+    const op = 0.9 * Math.min(1, ein * 3);
+    if (!p.removed || u < p.tr) return [x, y, 2.6, op];
+    const v = seg(u, p.tr, p.tr + REM_D);
+    switch (kind) {
+      case "screening":
+        if (p.dest === "bin") {     // caught on the screen, slides down the chute into the bin
+          if (v < 0.45) { const w = ease(v / 0.45); return [lerp(x, p.sx, w), lerp(y, Math.min(y, BOT - 20), w), 2.6, op, "#8C7A5B"]; }
+          if (v < 0.7) { const w = ease((v - 0.45) / 0.25); return [p.sx, lerp(Math.min(y, BOT - 20), BOT - 4, w), 2.6, op, "#8C7A5B"]; }
+          const w = ease((v - 0.7) / 0.3);
+          return [lerp(p.sx, p.dx, w), lerp(BOT - 4, p.dy, w), 2.6, 0.9, "#8C7A5B"];
+        } else {                    // grit sinks into the grit channel
+          const w = ease(v);
+          return [lerp(x, p.dx, w), lerp(y, p.dy, w), 2.4, 0.9, "#7D7668"];
+        }
+      case "settling": {            // sinks to the cone and merges into the sludge layer
+        const w = ease(seg(v, 0, 0.8));
+        return [lerp(x, p.dx, w), lerp(y, p.dy, w), 2.6, op * (1 - seg(v, 0.8, 1)), "#6E4622"];
+      }
+      case "biological": {          // pulled toward a microbe, then digested (shrinks and fades)
+        const [mx, my] = fx.microbePos(p.mic, t);
+        const w = ease(seg(v, 0, 0.5)) * 0.7;
+        const d = 1 - seg(v, 0.5, 1);
+        return [lerp(x, mx, w), lerp(y, my, w), 2.6 * d, op * d];
+      }
+      case "polishing": {           // flashes white, then vanishes
+        if (v < 0.35) return [x, y, lerp(2.6, 6, v / 0.35), 1, "#ffffff"];
+        const d = 1 - (v - 0.35) / 0.65;
+        return [x, y, 6 * d, d, "#ffffff"];
+      }
+      default:
+        return [x, y, 2.6, op * (1 - v)];
+    }
+  }
+
+  const col = makeColumn(cx, slot.w - 8, `${i + 1}. ${s.name}`,
+                         [s.bod_in_label + " mg/L", s.bod_out_label + " mg/L"],
+                         s.bod_in <= 0 ? "nothing to remove" :
+                         s.removal_fraction === 0 ? "no removal" : `−${s.pct_label}% removed`);
+  let last = null;
+  return {
+    s, tank, col, smallLabels, left: tx, right: tx + tw,
+    update(t) {
+      const u = localU(ph, t), st = statusOf(ph, t);
+      if (st === "before") {
+        if (last !== "before") { parts.forEach(p => draw(p, null)); tank.set(0, "#000"); }
+        col.counterEl.textContent = "";
+        col.subEl.setAttribute("opacity", 0);
+        col.nameEl.setAttribute("opacity", 0.5);
+        if (sludge) { sludge.setAttribute("d", ""); cake.setAttribute("height", 0); cake.setAttribute("y", 380); }
+        fx.tick(u, t, st);
+        last = st;
+        return;
+      }
+      // removal progress: the counter, water colour and tally all use the same e
+      const e = ease(seg(u, 0.18, 0.85));
+      const cNow = lerp(s.bod_in, s.bod_out, e);
+      tank.set(ease(seg(u, 0, 0.15)), bodColor(cNow));
+      col.counterEl.textContent = (u >= 0.85 ? s.bod_out_label : cNow.toFixed(2)) + " mg/L";
+      col.subEl.setAttribute("opacity", seg(u, 0.85, 0.95));
+      col.nameEl.setAttribute("opacity", 1);
+      if (sludge) {   // layer thickness grows with this stage's removal fraction
+        const h = Math.min(46, 3 + 40 * s.removal_fraction * seg(u, 0.25, 0.95));
+        const hw = (tw / 2) * h / (CONE_TIP - 290);
+        sludge.setAttribute("d", h > 0.5 ? `M${cx - hw},${CONE_TIP - h} H${cx + hw} L${cx},${CONE_TIP} Z` : "");
+        const ch = 9 * Math.min(1, s.removal_fraction * 1.6) * seg(u, 0.55, 1);
+        cake.setAttribute("y", 382 - ch); cake.setAttribute("height", ch);
+      }
+      if (st === "active" || last !== "done") for (const p of parts) draw(p, particleState(p, u, t));
+      fx.tick(u, t, st);
+      last = st;
+      this.e = e;
+    },
+    removedSoFar(t) {
+      const ph2 = phases[i + 1 + INTRO], st = statusOf(ph2, t);
+      if (st === "before") return 0;
+      return s.bod_removed * ease(seg(localU(ph2, t), 0.18, 0.85));
+    },
+  };
+}
+const stageObjs = P.stages.map(makeStage);
+
+/* ======================================================== pipes */
+const pipes = [];
+function makePipe(points, phaseIdx, color) {
+  const d = "M" + points.map(p => p.join(",")).join(" L");
+  el("path", { d, fill: "none", stroke: "#A8A294", "stroke-width": 11, "stroke-linejoin": "round" }, gPipes);
+  const inner = el("path", { d, fill: "none", stroke: color, "stroke-width": 6, "stroke-dasharray": "12 7",
+                             "stroke-linejoin": "round", visibility: "hidden" }, gPipes);
+  pipes.push({ inner, phaseIdx });
+}
+let prevRight = arrival.tank.right;
+stageObjs.forEach((o, i) => {
+  makePipe([[prevRight - 2, PIPE_Y], [o.left + 2, PIPE_Y]], i + 1 + INTRO, bodColor(o.s.bod_in));
+  prevRight = o.right;
+});
+const lastRight = stageObjs.length ? prevRight : arrival.tank.right;
+const outPh = phases[phases.length - 1];
+makePipe([[lastRight - 2, PIPE_Y], [OUT_X, PIPE_Y], [OUT_X, RIVER_Y + 8]], phases.length - 1, bodColor(P.c_eff));
+function updatePipes(t) {
+  for (const p of pipes) {
+    const on = t >= phases[p.phaseIdx].start;
+    p.inner.setAttribute("visibility", on ? "visible" : "hidden");
+    if (on) p.inner.setAttribute("stroke-dashoffset", (-t * FLOW_SPEED).toFixed(1));
+  }
+}
+
+/* ===================================================== river + outfall */
+const wave = y => `M0,${y} Q${W2 / 8},${y - 10} ${W2 / 4},${y} T${W2 / 2},${y} T${3 * W2 / 4},${y} T${W2},${y}`;
+const river = el("path", { d: wave(RIVER_Y) + ` V${RIVER_Y + 77} H0 Z`, fill: "#3A6F9A", opacity: 0.4 }, gWater);
+const waves = [0, 1].map(k => el("path", { d: wave(RIVER_Y + 22 + k * 22), fill: "none", stroke: "#FDFCF8",
+                                            "stroke-opacity": 0.7, "stroke-width": 1.5, "stroke-dasharray": "30 40" }, gWater));
+const plume = el("ellipse", { cx: OUT_X, cy: RIVER_Y + 32, rx: 0, ry: 0, fill: "url(#plume)" }, gWater);
+const splash = el("ellipse", { cx: OUT_X, cy: RIVER_Y + 6, rx: 0, ry: 0, fill: bodColor(P.c_eff), opacity: 0.8 }, gFx);
+el("text", { x: 16, y: RIVER_Y + 62, class: "small", "font-size": u2(16) }, gLabels).textContent = "Receiving river";
+const outCol = makeColumn(W2 - 90, 130, "Outfall", [P.c_eff_label + " mg/L"], "to the river");  // right edge ≤ W2 - 25
+
+// verdict badge: top-right of the facility tier (sized and placed in layoutLabels)
+const badgeRect = el("rect", { rx: 0, fill: "#F5F3EE" }, gBadge);   // paper: keeps the line clear
+const badgeText = el("text", { "text-anchor": "middle", fill: P.passed ? "#2F6B3A" : "#A61B1B", "font-weight": 700 }, gBadge);
+badgeText.textContent = (P.passed ? "● PASS · " : "● FAIL · ") + P.verdict;
+gBadge.setAttribute("opacity", 0);
+
+function updateOutfall(t) {
+  const u = localU(outPh, t), st = statusOf(outPh, t);
+  const started = st !== "before";
+  for (const [i, w] of waves.entries()) w.setAttribute("stroke-dashoffset", (-t * (12 + 6 * i)).toFixed(1));
+  const sp = started ? 1 : 0;
+  splash.setAttribute("rx", (sp * (8 + 2 * Math.sin(t * 6))).toFixed(1));
+  splash.setAttribute("ry", (sp * 3).toFixed(1));
+  const e = ease(seg(u, 0.35, 1));
+  if (!P.passed) {   // faint brown plume spreading in the river
+    plume.setAttribute("rx", (220 * e).toFixed(1));
+    plume.setAttribute("ry", (34 * e).toFixed(1));
+    plume.setAttribute("opacity", (0.9 * e).toFixed(2));
+  }
+  gBadge.setAttribute("opacity", ease(seg(u, 0.45, 0.8)).toFixed(2));
+  outCol.counterEl.textContent = P.c_eff_label + " mg/L";
+  outCol.counterEl.setAttribute("opacity", started ? 1 : 0);
+  outCol.subEl.setAttribute("opacity", started ? 1 : 0);
+  outCol.nameEl.setAttribute("opacity", started ? 1 : 0.5);
+  outCol.counterEl.setAttribute("fill", P.passed ? "#2F6B3A" : "#A61B1B");
+  return u;
+}
+
+/* ================================================= tier 1: households
+   Narrative only: no BOD values are shown here (the model starts at the
+   facility inlet).  Each house drains into its OWN septic tank — there is
+   deliberately no pipe from the houses to the facility (no sewer).          */
+const G1 = 150;                        // ground line of tier 1
+const ST_TOP = 168, ST_BOT = 226;      // septic tank top / bottom (underground)
+const LIQ = 172;                       // liquid surface inside a full septic tank
+const T1_BOT = 255;                    // bottom of the soil cut-away (tier 2 starts just below)
+const RAMP_SLOPE = 0.6;                // road ramp down to the right, toward the facility;
+const RAMP_X = VBW - (T1_BOT - G1) / RAMP_SLOPE;  // it reaches the right edge at the tier boundary
+const tier1Texts = [];                 // [element, base size, max width] — fitted in layoutLabels()
+function tier1Text(x, y, str, size, maxW, attrs = {}) {
+  const e = el("text", { x, y, class: "lbl", ...attrs }, gTier1);
+  e.textContent = str; tier1Texts.push([e, size, maxW]); return e;
+}
+
+const pumpedFrac = (k, t) => {
+  const st = COLLECT.stops[k], tc = t - phases[1].start;
+  return ease(seg(tc, st.pumpStart, st.pumpEnd));
+};
+
+const households = (() => {
+  const ph = phases[0], phC = phases[1];
+  // sky, soil (cut-away cross-section), grass line, road with a ramp
+  el("rect", { x: 0, y: 0, width: VBW, height: G1, fill: "#F5F3EE" }, gTier1);
+  el("rect", { x: 0, y: G1, width: VBW, height: T1_BOT - G1, fill: "#E2D9C6" }, gTier1);
+  const R = rng(4242);
+  for (let i = 0; i < 45; i++)   // pebbles, so the soil reads as soil
+    el("circle", { cx: R() * VBW, cy: lerp(G1 + 6, T1_BOT - 4, R()), r: 1 + R() * 1.6, fill: "#B9AC93" }, gTier1);
+  el("line", { x1: 0, y1: G1, x2: RAMP_X, y2: G1, stroke: "#3F7D4E", "stroke-width": 2 }, gTier1);
+  el("path", { d: `M0,${G1 + 2} H${RAMP_X} L${VBW + 40},${G1 + 2 + (VBW + 40 - RAMP_X) * RAMP_SLOPE}`,
+               fill: "none", stroke: "#5A5F66", "stroke-width": 4 }, gTier1);
+  // one header line: bold title + dim subtitle (fixed sizes; ~950 units wide, fits the 1600 canvas)
+  const hdr = el("text", { x: 16, y: 30, class: "lbl" }, gTier1);
+  el("tspan", { "font-size": 22, "font-weight": 700 }, hdr).textContent = "HOUSEHOLDS";
+  el("tspan", { dx: 14, "font-size": 17, class: "dim" }, hdr).textContent =
+    "Toilet, kitchen & bath wastewater → each home's own septic tank (no sewer to the plant)";
+  for (const [x, r] of [[1060, 26], [1150, 20], [1250, 30]]) {   // a few trees, for scale
+    el("rect", { x: x - 4, y: G1 - 30, width: 8, height: 30, fill: "#9A8566", stroke: "#1B1E22", "stroke-width": 1.2 }, gTier1);
+    el("circle", { cx: x, cy: G1 - 30 - r * 0.7, r, fill: "#A9C29B", stroke: "#1B1E22", "stroke-width": 1.2 }, gTier1);
+  }
+
+  const ROOFS = ["#A9746A", "#7F8FA6", "#A8946A", "#8E8378"], WALLS = ["#ECE6D8", "#E6E2D7", "#E9E4D6", "#EDE6D9"];
+  const houses = HOUSE_X.map((c, k) => {
+    // --- house (flat cartoon) ---
+    el("polygon", { points: `${c - 62},${106} ${c},${72} ${c + 62},${106}`, fill: ROOFS[k], stroke: "#1B1E22", "stroke-width": 1.2, "stroke-linejoin": "round" }, gTier1);
+    el("rect", { x: c - 52, y: 104, width: 104, height: G1 - 104, fill: WALLS[k], stroke: "#1B1E22", "stroke-width": 1.2 }, gTier1);
+    el("rect", { x: c - 40, y: 114, width: 26, height: 18, rx: 0, fill: "#C9D8E2", stroke: "#1B1E22", "stroke-width": 1 }, gTier1);
+    el("rect", { x: c + 16, y: 120, width: 20, height: G1 - 120, fill: "#5A5F66", stroke: "#1B1E22", "stroke-width": 1 }, gTier1);
+    // --- septic tank: two chambers, baffle wall with a mid-depth opening ---
+    const tx = c - 74, tw = 88, bx = c - 14;          // tank x, width, baffle x
+    el("rect", { x: c - 70, y: G1, width: 12, height: ST_TOP - G1, fill: "#D9D2C2", stroke: "#1B1E22",
+                 "stroke-width": 1.2 }, gTier1);                                   // access riser
+    el("line", { x1: c - 30, y1: G1 - 6, x2: c - 30, y2: ST_TOP + 2, stroke: "#5A5F66", "stroke-width": 4 }, gTier1); // drain
+    el("rect", { x: tx, y: ST_TOP, width: tw, height: ST_BOT - ST_TOP, fill: "#E4E0D6" }, gTier1);
+    const liquid = el("rect", { x: tx, width: tw, fill: "#7A5A36", opacity: 0.95 }, gTier1);
+    const sludge1 = el("rect", { x: tx, width: bx - tx, fill: "#4A2F17" }, gTier1);
+    const sludge2 = el("rect", { x: bx, width: tx + tw - bx, fill: "#4A2F17" }, gTier1);
+    const scum = el("rect", { x: tx, width: bx - tx, fill: "#C9AE7A", opacity: 0.9 }, gTier1);
+    el("line", { x1: bx, y1: ST_TOP, x2: bx, y2: 192, stroke: "#1B1E22", "stroke-width": 1.5 }, gTier1);
+    el("line", { x1: bx, y1: 204, x2: bx, y2: ST_BOT, stroke: "#1B1E22", "stroke-width": 1.5 }, gTier1);
+    el("rect", { x: tx, y: ST_TOP, width: tw, height: ST_BOT - ST_TOP, fill: "none", stroke: "#1B1E22",
+                 "stroke-width": 1.5 }, gTier1);
+    // --- wastewater droplets falling down the drain ---
+    const drops = [];
+    for (let d = 0; d < 5; d++)
+      drops.push({ el: el("circle", { cx: c - 30, r: 2.6, fill: "#7A5A36", stroke: "#3D2712", "stroke-width": 1,
+                                      visibility: "hidden" }, gTier1), ph: d / 5 + R() * 0.1 });
+    return { c, tx, tw, bx, liquid, sludge1, sludge2, scum, drops };
+  });
+  // layer names on the last tank (shown while it is full)
+  const last = houses[houses.length - 1];
+  const scumLbl = tier1Text(last.tx + last.tw + 6, LIQ + 6, "scum", 16, 80, { class: "lbl dim", opacity: 0 });
+  const sludgeLbl = tier1Text(last.tx + last.tw + 6, ST_BOT - 2, "sludge", 16, 80, { class: "lbl dim", opacity: 0 });
+  tier1Text(last.tx + last.tw / 2, T1_BOT - 6, "septic tank", 16, 160, { class: "lbl dim", "text-anchor": "middle" });
+  tier1Text(16, T1_BOT - 8, `Illustrative — the facility receives septage from many households; ` +
+            `${HOUSE_X.length} are shown.`, 15, 620, { class: "lbl dim" });
+
+  return {
+    update(t) {
+      const u = localU(ph, t);
+      const grow = ease(u);                        // solids keep settling during the household phase
+      const dropping = statusOf(ph, t) === "active";
+      houses.forEach((h, k) => {
+        // Every tank starts full (same for all); pumping leaves only a thin residual layer.
+        const e = pumpedFrac(k, t);
+        const liqTop = lerp(LIQ, ST_BOT - 4, e);
+        h.liquid.setAttribute("y", liqTop); h.liquid.setAttribute("height", ST_BOT - liqTop);
+        const hs = lerp(8 + 3 * grow, 2.5, e), hc = lerp(4 + 1.5 * grow, 0, e);
+        h.sludge1.setAttribute("y", ST_BOT - hs); h.sludge1.setAttribute("height", hs);
+        h.sludge2.setAttribute("y", ST_BOT - hs * 0.45); h.sludge2.setAttribute("height", hs * 0.45);
+        h.scum.setAttribute("y", liqTop); h.scum.setAttribute("height", hc);
+        for (const d of h.drops) {
+          d.el.setAttribute("visibility", dropping ? "visible" : "hidden");
+          if (dropping) d.el.setAttribute("cy", lerp(G1 - 8, LIQ + 12, (t * 0.9 + d.ph) % 1).toFixed(1));
+        }
+      });
+      const lbl = seg(u, 0.3, 0.6) * (1 - pumpedFrac(houses.length - 1, t));
+      scumLbl.setAttribute("opacity", lbl); sludgeLbl.setAttribute("opacity", lbl);
+    },
+  };
+})();
+
+/* ============================================================ vacuum truck
+   One truck for the whole story.  Its drawing uses the original coordinates
+   (body x 2..120, wheels touching y = 316).  place() puts that wheel-bottom
+   centre point (61, 316) at (X, Y), optionally tilted and mirrored.           */
+const truck = (() => {
+  const phC = phases[1], phA = phases[INTRO];
+  // hose used on the household tier (drawn under the truck)
+  const hoseOuter = el("path", { fill: "none", stroke: "#4A4F57", "stroke-width": 6, "stroke-linecap": "round" }, gTop);
+  const hoseFlow = el("path", { fill: "none", stroke: bodColor(P.c0), "stroke-width": 3, "stroke-dasharray": "6 6" }, gTop);
+  const g = el("g", {}, gTop);
+  const clip = el("clipPath", { id: "truckTank" }, defs);
+  el("rect", { x: 36, y: 236, width: 84, height: 56, rx: 26 }, clip);
+  el("rect", { x: 36, y: 236, width: 84, height: 56, rx: 26, fill: "#D6D1C5" }, g);
+  const fill = el("rect", { x: 36, width: 84, y: 292, height: 0, fill: bodColor(P.c0),
+                            "clip-path": "url(#truckTank)" }, g);              // septage inside the truck
+  el("rect", { x: 36, y: 236, width: 84, height: 56, rx: 26, fill: "none", stroke: "#1B1E22", "stroke-width": 1.5 }, g);
+  const word = el("text", { x: 78, y: 268, "text-anchor": "middle", "font-size": 10, "font-weight": 700,
+                            class: "lbl" }, g);
+  word.textContent = "SEPTAGE";
+  el("rect", { x: 2, y: 248, width: 34, height: 48, rx: 4, fill: "#C99A3A", stroke: "#1B1E22", "stroke-width": 1.2 }, g);        // cab
+  el("rect", { x: 7, y: 254, width: 18, height: 16, rx: 1, fill: "#C9D8E2", stroke: "#1B1E22", "stroke-width": 1 }, g);       // window
+  el("circle", { cx: 24, cy: 305, r: 11, fill: "#1B1E22", stroke: "#5A5F66", "stroke-width": 2 }, g);
+  el("circle", { cx: 98, cy: 305, r: 11, fill: "#1B1E22", stroke: "#5A5F66", "stroke-width": 2 }, g);
+  // the only number in the intro: Q, straight from the payload
+  const label = el("text", { y: 66, class: "lbl", "font-weight": 700 }, gTop);
+  label.textContent = `Septage collected: Q = ${P.flow_label} m³/day`;
+
+  function place(X, Y, angle, mirrored, size = 1) {
+    g.setAttribute("transform", `translate(${X.toFixed(1)},${Y.toFixed(1)}) rotate(${angle.toFixed(1)}) ` +
+                                `scale(${((mirrored ? -1 : 1) * size).toFixed(4)},${size.toFixed(4)}) translate(-61,-316)`);
+    // un-mirror the word on the tank so it stays readable
+    word.setAttribute("transform", mirrored ? "translate(156,0) scale(-1,1)" : "");
+  }
+  const RAMP_DEG = Math.atan(RAMP_SLOPE) * 180 / Math.PI;
+  const S = COLLECT.stops, LAST = S[S.length - 1];
+
+  // truck position on tier 1 at tc seconds into the collection phase
+  function routeX(tc) {
+    if (tc < COLLECT.DRIVE_IN) return lerp(-90, S[0].X, ease(tc / COLLECT.DRIVE_IN));
+    for (let k = S.length - 1; k >= 1; k--)
+      if (tc >= S[k].start) return lerp(S[k - 1].X, S[k].X, ease(seg(tc, S[k].start, S[k].arrive)));
+    return S[0].X;
+  }
+
+  return {
+    update(t) {
+      let level;                                              // septage level in the truck, 0..1
+      const hoseOn = t >= phC.start && t < phC.end;
+      if (t < phA.start) {
+        // ----- tier 1: drive in (cab first, facing right), pump every tank, drive off down the ramp -----
+        const tc = t - phC.start;
+        let X = routeX(tc), Y = G1, angle = 0;
+        const LEAVE_FLAT = 0.6;                               // seconds to reach the ramp
+        if (tc >= COLLECT.leave) {
+          const w1 = seg(tc, COLLECT.leave, COLLECT.leave + LEAVE_FLAT);
+          X = lerp(LAST.X, RAMP_X, ease(w1));
+          if (w1 >= 1) {
+            const w = seg(tc, COLLECT.leave + LEAVE_FLAT, COLLECT.total);
+            X = lerp(RAMP_X, VBW + 110, w); Y = G1 + (X - RAMP_X) * RAMP_SLOPE;
+            angle = RAMP_DEG * Math.min(1, w * 4);
+          }
+        }
+        if (t < phC.start) X = -90;                           // still off-screen during "households"
+        place(X, Y, angle, true);
+        // fill rises one step per tank: 1/4 -> 2/4 -> 3/4 -> full
+        level = S.reduce((sum, _, k) => sum + pumpedFrac(k, t), 0) / S.length;
+        // hose: at the current stop it drops into the riser, pumps, then is pulled back up
+        let showHose = false, pumping = false;
+        const k = S.findIndex(st => tc >= st.start && tc < st.start + COLLECT.STOP);
+        if (hoseOn && k >= 0 && tc < COLLECT.leave) {
+          const st = S[k];
+          const reach = ease(seg(tc, st.arrive, st.pumpStart)) *
+                        (1 - ease(seg(tc, st.pumpEnd, st.pumpEnd + COLLECT.HOSE)));
+          const yEnd = lerp(100, ST_BOT - 10, reach), hx = X - 17;   // hx: top of the truck's tank
+          const d = `M${hx.toFixed(1)},72 C${hx.toFixed(1)},40 ${st.riser},40 ${st.riser},100 L${st.riser},${yEnd.toFixed(1)}`;
+          for (const h of [hoseOuter, hoseFlow]) h.setAttribute("d", d);
+          showHose = reach > 0.01;
+          pumping = tc >= st.pumpStart && tc < st.pumpEnd;
+        }
+        hoseOuter.setAttribute("visibility", showHose ? "visible" : "hidden");
+        hoseFlow.setAttribute("visibility", pumping ? "visible" : "hidden");
+        hoseFlow.setAttribute("stroke-dashoffset", (t * 60).toFixed(1));   // flows up, toward the truck
+        // label rides above the truck once every tank has been emptied
+        const showLabel = hoseOn && tc >= LAST.pumpEnd && tc < COLLECT.total - 0.1;
+        label.setAttribute("visibility", showLabel ? "visible" : "hidden");
+        if (showLabel) {
+          const w = label.getComputedTextLength();
+          label.setAttribute("x", clamp(X - 70, 6, VBW - w - 6).toFixed(1));
+        }
+      } else {
+        // ----- tier 2: back up to the receiving tank (same motion as before) and empty -----
+        const u = localU(phA, t);
+        // tier-2 local point (61 + dx, SHIFT + 316) converted to canvas units
+        place(S2 * (61 + lerp(-190, 0, ease(seg(u, 0, 0.42)))), TIER2_Y + S2 * (SHIFT + 316), 0, false, S2);
+        level = 1 - ease(seg(u, 0.45, 0.95));
+        hoseOuter.setAttribute("visibility", "hidden"); hoseFlow.setAttribute("visibility", "hidden");
+        label.setAttribute("visibility", "hidden");
+      }
+      fill.setAttribute("y", (292 - 56 * level).toFixed(1));
+      fill.setAttribute("height", (56 * level).toFixed(1));
+    },
+    label,
+  };
+})();
+const facilityHdr = el("text", { x: 16, y: 22, class: "lbl dim", "font-weight": 600 }, gTier2);
+facilityHdr.textContent = "TREATMENT FACILITY";
+tier1Texts.push([facilityHdr, u2(17), 400], [truck.label, 17, 500]);
+
+/* ===================================================== label layout
+   Fits every label to its column.  Sizes are fixed in viewBox units (target
+   canvas sizes: stage names 22, BOD values 24 bold, sub-lines 17, small labels 16),
+   so the text scales together with the drawing.  Long labels shrink to fit.   */
+const measurer = el("text", { x: -999, y: -999 }, gLabels);
+function textW(str, size, weight) {
+  measurer.setAttribute("font-size", size);
+  measurer.setAttribute("font-weight", weight || 400);
+  measurer.textContent = str;
+  return measurer.getComputedTextLength();
+}
+function fit(strs, maxW, size, minSize, weight) {
+  while (size > minSize && Math.max(...strs.map(x => textW(x, size, weight))) > maxW) size -= 0.5;
+  return size;
+}
+function wrap(str, maxW, size) {
+  const lines = []; let cur = "";
+  for (const w of str.split(" ")) {
+    const trial = cur ? cur + " " + w : w;
+    if (!cur || textW(trial, size) <= maxW) cur = trial; else { lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function layoutLabels() {
+  const px = svg.getBoundingClientRect().width;
+  if (!px || textW("M", 12) === 0) return false;     // not visible yet; retried on resize
+  for (const c of columns) {
+    let size = u2(22), lines = wrap(c.name, c.maxW, size);
+    while (lines.length > 2 && size > u2(13)) { size -= 0.5; lines = wrap(c.name, c.maxW, size); }
+    size = fit(lines, c.maxW, size, 7);
+    const cs = fit(c.counterStrs, c.maxW, u2(24), u2(12), 700);
+    const ss = fit([c.subStr], c.maxW, u2(17), u2(10), 500);
+    // Stack the lines upward from just above the tank tops, using font metrics
+    // (ascent ~0.9 x size, descent ~0.25 x size) plus a small gap.
+    const subY = TOP + SHIFT - 6 - 0.25 * ss;
+    const counterY = subY - 0.9 * ss - 4 - 0.25 * cs;
+    const nameLastY = counterY - 0.9 * cs - 4 - 0.25 * size, lineH = size * 1.15;
+    c.nameEl.setAttribute("font-size", size);
+    c.nameEl.textContent = "";
+    lines.forEach((ln, j) => {
+      const ts = el("tspan", { x: c.cx, y: (nameLastY - (lines.length - 1 - j) * lineH).toFixed(1) }, c.nameEl);
+      ts.textContent = ln;
+    });
+    c.counterEl.setAttribute("font-size", cs);
+    c.counterEl.setAttribute("x", c.cx); c.counterEl.setAttribute("y", counterY);
+    c.subEl.setAttribute("font-size", ss);
+    c.subEl.setAttribute("x", c.cx); c.subEl.setAttribute("y", subY);
+  }
+  for (const o of stageObjs)
+    for (const [e, maxW] of o.smallLabels) e.setAttribute("font-size", fit([e.textContent], maxW, u2(16), u2(10)));
+  for (const [e, size, maxW] of tier1Texts)
+    e.setAttribute("font-size", fit([e.textContent], maxW, size, size * 0.6, e.getAttribute("font-weight") || 400));
+  const bs = fit([badgeText.textContent], W2 * 0.45, u2(18), u2(11), 700);   // badge, top-right
+  const bw = textW(badgeText.textContent, bs, 700) + bs * 1.6, bh = bs * 1.9;
+  badgeText.setAttribute("font-size", bs);
+  badgeRect.setAttribute("x", W2 - 12 - bw); badgeRect.setAttribute("y", 8);
+  badgeRect.setAttribute("width", bw); badgeRect.setAttribute("height", bh);
+  badgeText.setAttribute("x", W2 - 12 - bw / 2); badgeText.setAttribute("y", 8 + bh / 2 + bs * 0.36);
+  return true;
+}
+
+/* ================================================ tally bar + text */
+/* stage colours, muted for paper (same as the charts). Screening is a shade darker
+   than the charts' #8C7A5B so that the white value printed on it meets WCAG AA. */
+const STAGE_COLORS = ["#84735A", "#B08A3E", "#3F7D4E", "#3A6F9A", "#7D7668", "#5A5F66"];
+const STAGE_TEXT = ["#FFFFFF", "#1B1E22", "#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF"];  // value text on each
+const bar = document.getElementById("bar"), legend = document.getElementById("legend");
+const segs = P.stages.map((s, i) => {
+  const d = document.createElement("div");
+  d.style.background = STAGE_COLORS[i % STAGE_COLORS.length];
+  d.style.color = STAGE_TEXT[i % STAGE_TEXT.length];
+  d.style.width = "0%";
+  bar.appendChild(d);
+  return d;
+});
+const leftSeg = document.createElement("div");
+leftSeg.className = "left"; leftSeg.style.width = "0%"; bar.appendChild(leftSeg);
+const biggest = P.stages.reduce((b, s, i) => (s.bod_removed > P.stages[b].bod_removed ? i : b), 0);
+const legendItems = P.stages.map((s, i) => {
+  const item = document.createElement("span");
+  legend.appendChild(item);
+  return item;
+});
+function updateTally(t) {
+  const c0 = P.c0 > 0 ? P.c0 : 1;
+  stageObjs.forEach((o, i) => {
+    const s = P.stages[i], done = t >= phases[i + 1 + INTRO].end;
+    const w = 100 * o.removedSoFar(t) / c0;
+    segs[i].style.width = w.toFixed(3) + "%";
+    segs[i].textContent = done && w >= 9 ? "−" + s.removed_label : "";
+    const sw = `<span class="sw" style="background:${STAGE_COLORS[i % STAGE_COLORS.length]}"></span>`;
+    const val = !done ? "…" : s.bod_removed > 0 ? `−${s.removed_label} mg/L` : "0.00 mg/L (none)";
+    const big = done && i === biggest && s.bod_removed > 0 && N > 1;
+    legendItems[i].innerHTML = `${sw}${i + 1}. ${s.name}: ${val}${big ? " <b>(largest)</b>" : ""}`;
+    legendItems[i].className = big ? "big" : "";
+  });
+  const outStarted = t >= outPh.start;
+  leftSeg.style.width = outStarted ? (100 * P.c_eff / c0).toFixed(3) + "%" : "0%";
+  leftSeg.textContent = outStarted && 100 * P.c_eff / c0 >= 9 ? "left: " + P.c_eff_label : "";
+}
+const narration = document.getElementById("narrText"), phaseEl = document.getElementById("phase");
+const summary = document.getElementById("summary");
+summary.className = P.passed ? "pass" : "fail";
+summary.innerHTML = `Overall removal = ${P.overall_label}% &nbsp;·&nbsp; Load in ${P.load_in_label} → out ${P.load_out_label} kg/day
+  &nbsp;·&nbsp; <span class="verdict">● ${P.passed ? "PASS" : "FAIL"}</span>`;
+function updateText(t) {
+  // "- 1e-6": when Step pauses exactly on a boundary, describe the phase just shown
+  const i = phaseIndexAt(Math.max(0, t - 1e-6)), ph = phases[i];
+  let txt, lab;
+  if (ph.type === "households") {
+    txt = "Households: wastewater from toilets, kitchens and baths flows into each home's septic tank, where solids settle.";
+    lab = "Households";
+  } else if (ph.type === "collection") {
+    txt = "Desludging: a vacuum truck pumps out the septage from each household's septic tank and hauls " +
+          "the combined load to the treatment facility.";
+    lab = "Collection";
+  } else if (ph.type === "arrival") { txt = P.narration_arrival; lab = "Arrival"; }
+  else if (ph.type === "stage") {
+    const s = P.stages[ph.i];
+    txt = s.narration;
+    // Keep the narration in step with the tank's counter: until the counter lands on
+    // its final value (u >= 0.85, see makeStage) show "in → …" instead of "in → out".
+    const cut = txt.indexOf(" → ");
+    if (localU(ph, t) < 0.85 && cut > 0) txt = txt.slice(0, cut) + " mg/L → …";
+    lab = `Stage ${ph.i + 1} of ${N} — ${s.name}`;
+  }
+  else { txt = P.narration_outfall; lab = t >= TOTAL ? "Finished" : "Outfall"; }
+  if (narration.textContent !== txt) narration.textContent = txt;
+  phaseEl.textContent = lab;
+  summary.style.opacity = localU(outPh, t) > 0.6 ? 1 : 0;
+}
+
+/* ============================================================ render */
+function render(t) {
+  households.update(t);
+  truck.update(t);
+  arrival.update(t);
+  stageObjs.forEach(o => o.update(t));
+  updatePipes(t);
+  updateOutfall(t);
+  updateTally(t);
+  updateText(t);
+}
+
+/* ===================================================== playback + controls */
+const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+// "Skip intro": playback starts at Arrival instead of at the households.
+const skipIntro = document.getElementById("skipIntro");
+try { skipIntro.checked = localStorage.getItem("septageSkipIntro") === "1"; } catch (e) { /* storage blocked */ }
+const startT = () => (skipIntro.checked ? INTRO_END : 0);
+let t = startT(), playing = !reduceMotion, speed = 1, stopAt = null, lastTs = null, dirty = true;
+if (reduceMotion) t = TOTAL;   // show the final static state (both tiers) with all labels
+skipIntro.onchange = () => {
+  try { localStorage.setItem("septageSkipIntro", skipIntro.checked ? "1" : "0"); } catch (e) { /* ignore */ }
+  if (skipIntro.checked && t < INTRO_END) { t = INTRO_END; dirty = true; }
+};
+const btnPlay = document.getElementById("play");
+function updateButtons() { btnPlay.textContent = playing ? "⏸ Pause" : "▶ Play"; }
+
+btnPlay.onclick = () => {
+  if (!playing && t >= TOTAL) t = startT();       // play again from the start
+  playing = !playing; stopAt = null;
+  if (reduceMotion && playing) { t = TOTAL; playing = false; }
+  dirty = true;
+};
+document.getElementById("replay").onclick = () => {
+  t = reduceMotion ? TOTAL : startT(); playing = !reduceMotion; stopAt = null; dirty = true;
+};
+document.getElementById("step").onclick = () => {  // play to the end of the next phase, then pause
+  if (t >= TOTAL - 1e-6) t = startT();
+  const target = phases[phaseIndexAt(t + 1e-6)].end;
+  if (reduceMotion) { t = target; playing = false; } else { stopAt = target; playing = true; }
+  dirty = true;
+};
+document.getElementById("skip").onclick = () => { t = TOTAL; playing = false; stopAt = null; dirty = true; };
+document.querySelectorAll("[data-speed]").forEach(b => b.onclick = () => {
+  speed = parseFloat(b.dataset.speed);
+  document.querySelectorAll("[data-speed]").forEach(x => x.classList.toggle("on", x === b));
+});
+
+function frame(ts) {
+  const dt = lastTs === null ? 0 : Math.min(0.1, (ts - lastTs) / 1000);
+  lastTs = ts;
+  if (playing) {
+    t += dt * speed;
+    if (stopAt !== null && t >= stopAt) { t = stopAt; playing = false; stopAt = null; }
+    if (t >= TOTAL) { t = TOTAL; playing = false; }
+    dirty = true;
+  }
+  if (dirty) { render(t); updateButtons(); dirty = false; }
+  requestAnimationFrame(frame);
+}
+
+/* ===================================================== view: fit / zoom / fullscreen
+   "Fit" (default) shows the whole 1600x900 canvas inside #stage (letterboxed).
+   "−" / "+" zoom the scene 0.6x .. 1.6x with a CSS transform; when zoomed in,
+   drag the scene to pan.  Fullscreen uses the Fullscreen API on the whole panel
+   (scene + narration + tally); the button is hidden if the browser/iframe does
+   not allow fullscreen.                                                          */
+const appEl = document.getElementById("app"), stage = document.getElementById("stage"),
+      zoomer = document.getElementById("zoomer"), fitBtn = document.getElementById("fit"),
+      fsBtn = document.getElementById("fullscreen");
+let zoom = 1, panX = 0, panY = 0, drag = null;
+function applyView() {
+  const r = stage.getBoundingClientRect();
+  const mx = Math.max(0, (zoom - 1) * r.width / 2), my = Math.max(0, (zoom - 1) * r.height / 2);
+  panX = clamp(panX, -mx, mx); panY = clamp(panY, -my, my);    // never pan the scene out of view
+  zoomer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  stage.style.cursor = zoom > 1 ? (drag ? "grabbing" : "grab") : "default";
+  fitBtn.classList.toggle("on", zoom === 1 && panX === 0 && panY === 0);
+}
+fitBtn.onclick = () => { zoom = 1; panX = 0; panY = 0; applyView(); };
+document.getElementById("zoomIn").onclick = () => { zoom = Math.min(1.6, +(zoom + 0.2).toFixed(1)); applyView(); };
+document.getElementById("zoomOut").onclick = () => {
+  zoom = Math.max(0.6, +(zoom - 0.2).toFixed(1));
+  if (zoom <= 1) { panX = 0; panY = 0; }
+  applyView();
+};
+stage.addEventListener("pointerdown", e => {
+  if (zoom <= 1) return;
+  drag = { x: e.clientX - panX, y: e.clientY - panY };
+  stage.setPointerCapture(e.pointerId);
+  applyView();
+});
+stage.addEventListener("pointermove", e => {
+  if (!drag) return;
+  panX = e.clientX - drag.x; panY = e.clientY - drag.y;
+  applyView();
+});
+for (const ev of ["pointerup", "pointercancel"]) stage.addEventListener(ev, () => { drag = null; applyView(); });
+
+if (!(document.fullscreenEnabled && appEl.requestFullscreen)) fsBtn.style.display = "none";
+fsBtn.onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else appEl.requestFullscreen().catch(() => { fsBtn.style.display = "none"; });
+};
+document.addEventListener("fullscreenchange", () => {
+  fsBtn.textContent = document.fullscreenElement ? "✕ Exit fullscreen" : "⛶ Fullscreen";
+});
+
+// Text below the scene, or in a panel to its right: pick whichever lets the
+// 1600x900 scene be drawn larger in the space available.
+function sceneScale() {
+  const r = stage.getBoundingClientRect();
+  return Math.min(r.width / VBW, r.height / VBH);
+}
+function chooseLayout() {
+  appEl.className = "stacked"; const stacked = sceneScale();
+  appEl.className = "side";    const side = sceneScale();
+  appEl.className = side > stacked * 1.03 ? "side" : "stacked";
+}
+
+let laidOut = false;
+function onResize() {
+  chooseLayout();
+  applyView();
+  if (!laidOut) laidOut = layoutLabels();   // label sizes are fixed; only needs the SVG to be visible once
+  dirty = true;
+}
+new ResizeObserver(onResize).observe(appEl);
+
+/* Fonts: reuse the IBM Plex stylesheets that the host Streamlit page already loaded
+   (this frame has the same origin), so the file itself stays free of CDN links.
+   When opened on its own, the system fallbacks in the CSS are used. Once the fonts
+   are in, the labels are fitted again with the real glyph widths.               */
+const fontLinks = [];
+try {
+  for (const l of window.parent.document.querySelectorAll('link[href*="IBM+Plex"]')) {
+    const c = l.cloneNode(); c.rel = "stylesheet";
+    fontLinks.push(new Promise(r => { c.onload = c.onerror = r; }));
+    document.head.appendChild(c);
+  }
+} catch (e) { /* not embedded, or the parent is not reachable: keep the fallbacks */ }
+if (fontLinks.length && document.fonts)
+  Promise.all(fontLinks)
+    .then(() => Promise.all(['400 20px "IBM Plex Sans"', '400 20px "IBM Plex Sans Condensed"',
+                             '600 20px "IBM Plex Sans Condensed"', '400 20px "IBM Plex Mono"',
+                             '600 20px "IBM Plex Mono"'].map(f => document.fonts.load(f).catch(() => null))))
+    .then(() => { laidOut = false; onResize(); });
+onResize();
+render(t);
+requestAnimationFrame(frame);
+
+// Hook for automated screenshots/tests: window.__anim.seek(seconds)
+window.__anim = { TOTAL, INTRO_END, phases, COLLECT, seek(x) { t = clamp(x, 0, TOTAL); playing = false; stopAt = null; dirty = true; },
+                  get t() { return t; }, get playing() { return playing; } };
+</script>
+</body>
+</html>

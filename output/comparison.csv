@@ -1,0 +1,5 @@
+source,stage,observed (mg/L),simulated (mg/L),percent error (%)
+"PLACEHOLDER (replace with Baltazar et al., 2021)",Primary settling,1200,1235.0,2.9166666666666665
+"PLACEHOLDER (replace with Baltazar et al., 2021)",Biological treatment,100,176.42857142857136,76.42857142857136
+"PLACEHOLDER (replace with Pausta et al., 2023)",Biological treatment,120,176.42857142857136,47.02380952380947
+"PLACEHOLDER (replace with Pausta et al., 2023)",Polishing & disinfection,50,70.57142857142854,41.14285714285708

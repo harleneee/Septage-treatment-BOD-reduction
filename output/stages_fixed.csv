@@ -1,0 +1,5 @@
+Stage,Removal fraction,BOD in (mg/L),BOD out (mg/L),BOD removed (mg/L),Load out (kg/day),Load removed (kg/day),Cumulative removal (%)
+Screening & grit removal,0.05,2000.0,1900.0,100.0,95.0,5.0,5.000000000000004
+Primary settling,0.35,1900.0,1235.0,665.0,61.75,33.25,38.24999999999999
+Biological treatment,0.92,1235.0,98.79999999999995,1136.2,4.939999999999999,56.81,95.06
+Polishing & disinfection,0.6,98.79999999999995,39.51999999999998,59.27999999999997,1.975999999999999,2.9639999999999986,98.024

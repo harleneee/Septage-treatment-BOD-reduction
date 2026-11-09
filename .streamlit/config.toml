@@ -1,0 +1,31 @@
+# Visual theme: "engineering datasheet" (paper, ink, one signal-orange accent).
+# Fonts come from Google Fonts through Streamlit's native theme settings;
+# the finer details (uppercase labels, mono readouts, hairlines) are in the
+# CSS block near the top of app.py.
+
+[theme]
+base = "light"
+primaryColor = "#C2410C"              # signal orange: primary button, active tab, focus
+backgroundColor = "#F5F3EE"           # paper
+secondaryBackgroundColor = "#ECE9E1"  # sidebar / panels (tone shift, no cards)
+textColor = "#1B1E22"                 # ink
+borderColor = "#C9C4B8"               # hairline rules
+dataframeBorderColor = "#C9C4B8"
+dataframeHeaderBackgroundColor = "#ECE9E1"
+dataframeHeaderTextColor = "#1B1E22"
+linkColor = "#C2410C"
+greenColor = "#2F6B3A"
+greenTextColor = "#2F6B3A"
+redColor = "#A61B1B"
+redTextColor = "#A61B1B"
+grayTextColor = "#5A5F66"
+codeTextColor = "#1B1E22"
+codeBackgroundColor = "#ECE9E1"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "2px"
+buttonRadius = "2px"
+baseFontSize = 15
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+headingFont = "IBM Plex Sans Condensed:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap"
+codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
